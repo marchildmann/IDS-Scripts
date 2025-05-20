@@ -242,17 +242,26 @@ cat > "$DOC_ROOT/phpinfo.php" <<'EOF'
 phpinfo();
 EOF
 
-echo_step "Creating mod_rewrite test…"
-mkdir -p "$DOC_ROOT/rewrite-test"
-cat > "$DOC_ROOT/rewrite-test/success.html" <<EOF
+echo_step "Creating mod_rewrite test files..."
+mkdir -p "${DOC_ROOT}/rewrite-test"
+cat > "${DOC_ROOT}/rewrite-test/success.html" <<'EOF'
 <html><body><h1>Rewrite Test Successful!</h1></body></html>
 EOF
-cat > "$DOC_ROOT/rewrite-test/.htaccess" <<'EOF'
+
+# Fine-tuned .htaccess for directory root + /test
+cat > "${DOC_ROOT}/rewrite-test/.htaccess" <<'EOF'
+Options -Indexes
+DirectoryIndex success.html
+
 RewriteEngine On
-RewriteRule ^test$ success.html [L]
+RewriteRule ^$           success.html [L]
+RewriteRule ^test$       success.html [L]
 EOF
-chmod 644 "$DOC_ROOT/phpinfo.php" "$DOC_ROOT/rewrite-test/"*
-echo_success "Test pages created."
+
+chmod 644 "${DOC_ROOT}/rewrite-test/success.html" \
+         "${DOC_ROOT}/rewrite-test/.htaccess"
+echo_success "Rewrite test files created."
+
 
 ### 19) Run as current user ###
 echo_step "Setting Apache run user/group…"

@@ -345,7 +345,7 @@ GOEXAMPLE_BLOCK="
     # GoExample demo: only public_html is web-exposed; .htaccess inside proxies to 127.0.0.1:${GOEXAMPLE_PORT}
     Alias /GoExample \"${GOEXAMPLE_PUBLIC}\"
     <Directory \"${GOEXAMPLE_PUBLIC}\">
-        Options -Indexes FollowSymLinks
+        Options -Indexes +FollowSymLinks
         AllowOverride All
         Require all granted
     </Directory>"
@@ -403,7 +403,7 @@ if [[ "${#DEV_DOMAINS[@]}" -gt 0 ]]; then
     CustomLog "$PREFIX/var/log/httpd/${domain}-access_log" common
 
     <Directory "${domain_root}">
-        Options -Indexes FollowSymLinks
+        Options -Indexes +FollowSymLinks
         AllowOverride All
         Require all granted
     </Directory>
@@ -420,7 +420,7 @@ if [[ "${#DEV_DOMAINS[@]}" -gt 0 ]]; then
     SSLCertificateKeyFile "$SSL_DIR/localhost.key"
 
     <Directory "${domain_root}">
-        Options -Indexes FollowSymLinks
+        Options -Indexes +FollowSymLinks
         AllowOverride All
         Require all granted
     </Directory>
@@ -445,7 +445,19 @@ if [[ ! -f "$SUPERVISOR_CONF" ]]; then
 elif grep -Fq "$SUPERVISOR_USER_DIR" "$SUPERVISOR_CONF"; then
   echo_success "Supervisor [include] already references $SUPERVISOR_USER_DIR."
 elif grep -q "^\[include\]" "$SUPERVISOR_CONF"; then
-  echo_warn "$SUPERVISOR_CONF already has an [include] section. Add 'files = $SUPERVISOR_USER_DIR/*.conf' to it manually."
+  # Stock supervisord.conf ships with [include] + 'files = /opt/homebrew/etc/supervisor.d/*.ini'.
+  # `files` accepts space-separated globs, so append ours rather than refusing to touch it.
+  if grep -Eq "^files[[:space:]]*=" "$SUPERVISOR_CONF"; then
+    sed -i '' "s|^files[[:space:]]*=.*|& $SUPERVISOR_USER_DIR/*.conf|" "$SUPERVISOR_CONF"
+    echo_success "Appended $SUPERVISOR_USER_DIR/*.conf to existing [include] files=."
+  else
+    # [include] exists but has no files= directive — insert one right after the header.
+    awk -v glob="$SUPERVISOR_USER_DIR/*.conf" '
+      /^\[include\]/ { print; print "files = " glob; next }
+      { print }
+    ' "$SUPERVISOR_CONF" > "$SUPERVISOR_CONF.tmp" && mv "$SUPERVISOR_CONF.tmp" "$SUPERVISOR_CONF"
+    echo_success "Inserted files= directive into existing [include] section."
+  fi
 else
   cat >> "$SUPERVISOR_CONF" <<EOF
 
@@ -510,7 +522,7 @@ chmod 644 "${DOC_ROOT}/rewrite-test/success.html" \
 echo_success "Rewrite test files created."
 
 ### 18b) GoExample app: ~/Sites/GoExample with .htaccess [P] proxy ###
-echo_step "Scaffolding GoExample app at $GOEXAMPLE_DIR…"
+echo_step "Scaffolding GoExample app at ${GOEXAMPLE_DIR}…"
 mkdir -p "$GOEXAMPLE_PUBLIC" "$GOEXAMPLE_DIR/releases"
 
 # Source — only seed if absent, so re-runs don't clobber user edits
@@ -639,7 +651,8 @@ echo_step "Verifying HTTPS…"
 curl -sk "https://localhost" >/dev/null && echo_success "HTTPS OK" || echo_warn "HTTPS failed; check trust/logs"
 
 echo_step "Verifying DuckDB…"
-DUCKDB_VERSION=$(duckdb -c "SELECT version();" -noheader 2>/dev/null | tr -d ' ' || true)
+# -list mode prints raw rows (no box drawing); -noheader drops the column header.
+DUCKDB_VERSION=$(duckdb -list -noheader -c "SELECT version();" 2>/dev/null | tr -d '[:space:]' || true)
 if [[ -n "$DUCKDB_VERSION" ]]; then
   echo_success "DuckDB OK ($DUCKDB_VERSION)"
 else

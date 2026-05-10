@@ -22,6 +22,21 @@ function echo_success { echo -e "${GREEN}✓ $1${NC}"; }
 function echo_warn    { echo -e "${YELLOW}! $1${NC}"; }
 function echo_error   { echo -e "${RED}✗ $1${NC}"; exit 1; }
 
+# write_if_absent <path>
+#   Reads stdin and writes to <path> only if <path> doesn't already exist.
+#   If <path> exists, consumes stdin (so the calling heredoc still terminates
+#   cleanly) and prints a "preserving" warning. NEVER overwrites user content.
+function write_if_absent {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    cat > /dev/null
+    echo_warn "Preserving existing $path (delete it and re-run to regenerate)"
+  else
+    cat > "$path"
+    echo_success "Wrote $path"
+  fi
+}
+
 ### 1) Ensure macOS ###
 [[ "$(uname)" == "Darwin" ]] || echo_error "This script runs on macOS only."
 
@@ -93,10 +108,11 @@ echo_success "Packages installed."
 ### 6) Prepare ~/Sites ###
 echo_step "Setting up ~/Sites..."
 mkdir -p "$DOC_ROOT"
-cat > "$DOC_ROOT/index.html" <<EOF
+write_if_absent "$DOC_ROOT/index.html" <<EOF
 <html><body><h1>Apache is running!</h1></body></html>
 EOF
-chmod 755 "$DOC_ROOT" && chmod 644 "$DOC_ROOT/index.html"
+chmod 755 "$DOC_ROOT"
+[[ -f "$DOC_ROOT/index.html" ]] && chmod 644 "$DOC_ROOT/index.html"
 echo_success "Document root at $DOC_ROOT."
 
 ### 6b) Per-domain document roots ###
@@ -496,19 +512,19 @@ brew services restart supervisor >/dev/null 2>&1 \
 
 ### 18) Test pages ###
 echo_step "Creating phpinfo…"
-cat > "$DOC_ROOT/phpinfo.php" <<'EOF'
+write_if_absent "$DOC_ROOT/phpinfo.php" <<'EOF'
 <?php
 phpinfo();
 EOF
 
 echo_step "Creating mod_rewrite test files..."
 mkdir -p "${DOC_ROOT}/rewrite-test"
-cat > "${DOC_ROOT}/rewrite-test/success.html" <<'EOF'
+write_if_absent "${DOC_ROOT}/rewrite-test/success.html" <<'EOF'
 <html><body><h1>Rewrite Test Successful!</h1></body></html>
 EOF
 
 # Fine-tuned .htaccess for directory root + /test
-cat > "${DOC_ROOT}/rewrite-test/.htaccess" <<'EOF'
+write_if_absent "${DOC_ROOT}/rewrite-test/.htaccess" <<'EOF'
 Options -Indexes
 DirectoryIndex success.html
 
@@ -517,9 +533,9 @@ RewriteRule ^$           success.html [L]
 RewriteRule ^test$       success.html [L]
 EOF
 
-chmod 644 "${DOC_ROOT}/rewrite-test/success.html" \
-         "${DOC_ROOT}/rewrite-test/.htaccess"
-echo_success "Rewrite test files created."
+# chmod is harmless on already-correct files; skip silently if missing
+[[ -f "${DOC_ROOT}/rewrite-test/success.html" ]] && chmod 644 "${DOC_ROOT}/rewrite-test/success.html"
+[[ -f "${DOC_ROOT}/rewrite-test/.htaccess"    ]] && chmod 644 "${DOC_ROOT}/rewrite-test/.htaccess"
 
 ### 18b) GoExample app: ~/Sites/GoExample with .htaccess [P] proxy ###
 echo_step "Scaffolding GoExample app at ${GOEXAMPLE_DIR}…"
@@ -576,8 +592,11 @@ if [[ ! -f "$GOEXAMPLE_DIR/go.mod" ]]; then
     || echo_warn "go mod init failed (re-runnable with: cd $GOEXAMPLE_DIR && go mod init goexample)"
 fi
 
-# Build into releases/
-if command -v go >/dev/null 2>&1; then
+# Build into releases/ — only if the binary doesn't exist yet, so a hand-built
+# binary (e.g. with custom -ldflags) is never clobbered.
+if [[ -x "$GOEXAMPLE_BINARY" ]]; then
+  echo_warn "Preserving existing $GOEXAMPLE_BINARY (delete it and re-run to rebuild, or just: cd $GOEXAMPLE_DIR && go build -o $GOEXAMPLE_BINARY .)"
+elif command -v go >/dev/null 2>&1; then
   echo_step "Building goexample binary…"
   if ( cd "$GOEXAMPLE_DIR" && go build -o "$GOEXAMPLE_BINARY" . ); then
     echo_success "Built $GOEXAMPLE_BINARY"
@@ -588,8 +607,8 @@ else
   echo_warn "go not on PATH; skipping build."
 fi
 
-# .htaccess in public_html — overwritten on every run since this is our config
-cat > "$GOEXAMPLE_PUBLIC/.htaccess" <<EOF
+# .htaccess in public_html — preserve user edits on re-run.
+write_if_absent "$GOEXAMPLE_PUBLIC/.htaccess" <<EOF
 # Proxy everything under /GoExample/ to the Go binary on 127.0.0.1:${GOEXAMPLE_PORT}.
 # Requires mod_proxy, mod_proxy_http, mod_rewrite (all enabled by mac_setup_apache.sh).
 Options -Indexes
@@ -597,12 +616,11 @@ RewriteEngine On
 RewriteBase /GoExample/
 RewriteRule ^(.*)\$ http://127.0.0.1:${GOEXAMPLE_PORT}/\$1 [P,L]
 EOF
-chmod 644 "$GOEXAMPLE_PUBLIC/.htaccess"
-echo_success ".htaccess written: $GOEXAMPLE_PUBLIC/.htaccess"
+[[ -f "$GOEXAMPLE_PUBLIC/.htaccess" ]] && chmod 644 "$GOEXAMPLE_PUBLIC/.htaccess"
 
-# Supervisor program config — real .conf so supervisord auto-starts it on login
+# Supervisor program config — preserve user edits (e.g. custom env vars, log paths).
 GOEXAMPLE_SUPERVISOR_CONF="$SUPERVISOR_USER_DIR/goexample.conf"
-cat > "$GOEXAMPLE_SUPERVISOR_CONF" <<EOF
+write_if_absent "$GOEXAMPLE_SUPERVISOR_CONF" <<EOF
 [program:goexample]
 command=$GOEXAMPLE_BINARY
 directory=$GOEXAMPLE_DIR
@@ -614,7 +632,6 @@ environment=PORT="${GOEXAMPLE_PORT}"
 stdout_logfile=$GOEXAMPLE_DIR/stdout.log
 stderr_logfile=$GOEXAMPLE_DIR/stderr.log
 EOF
-echo_success "Supervisor program written: $GOEXAMPLE_SUPERVISOR_CONF"
 
 # Pick up the new program (or restart it if the binary was rebuilt)
 if [[ -x "$GOEXAMPLE_BINARY" ]] && command -v "$PREFIX/bin/supervisorctl" >/dev/null 2>&1; then

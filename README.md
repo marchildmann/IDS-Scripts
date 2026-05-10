@@ -10,6 +10,7 @@ A growing collection of useful development scripts for macOS. Each script automa
 - [Scripts](#scripts)  
   - [mac_setup_apache.sh](#mac_setup_apachesh)  
 - [Usage](#usage)  
+- [Daily workflow](#daily-workflow)  
 - [Contributing](#contributing)  
 - [License](#license)  
 
@@ -91,6 +92,7 @@ Automates Apache + HTTPS + PHP 8.4 + DuckDB + Go reverse-proxy setup on macOS vi
 - Runs Apache as **your** user (no `_www` permission headaches)  
 - Prompts for `sudo` **once** up-front, then uses a keep-alive loop  
 - Strict shell mode (`set -euo pipefail`) to catch unset vars and broken pipes  
+- **Re-runs never overwrite user content.** Every file the script seeds under `~/Sites/` or `~/.config/supervisor/conf.d/` is written through a `write_if_absent` helper — if the file already exists, the script skips it and prints a yellow `! Preserving existing …` line. The compiled GoExample binary is also preserved if `releases/goexample` is already executable (so a hand-built binary with custom `-ldflags` survives). Machine-managed configs (`httpd.conf`, `httpd-vhosts.conf`, the fenced `/etc/hosts` block, `supervisord.conf`'s `[include]` patch, the SSL cert) **are** still kept in sync — they're driven by the variables at the top of the script. To force-regenerate any preserved file, just `rm <path>` and re-run.  
 
 > ⚠️ **Dev-only.** The generated vhosts enable `Options Indexes` and `AllowOverride All` under `~/Sites`, which exposes directory listings and lets any `.htaccess` change server behavior. This is intentional for a local dev box — do **not** copy these settings onto a publicly reachable server.  
 
@@ -139,6 +141,86 @@ Automates Apache + HTTPS + PHP 8.4 + DuckDB + Go reverse-proxy setup on macOS vi
      # 4. Test through Apache
      curl -k https://localhost/api/<your-route>
      ```  
+
+---
+
+## Daily workflow
+
+The script is designed to be re-run as your environment evolves — every time you change a top-of-script variable, just run `./mac_setup_apache.sh` again. The four most common scenarios:
+
+### 1. Edit your site content
+
+Edit anything under `~/Sites/<domain>/public_html/` (or `~/Sites/index.html`, `phpinfo.php`, `rewrite-test/`, `GoExample/main.go`, etc.). The next `./mac_setup_apache.sh` run will leave your edits alone — you'll see a yellow `! Preserving existing …` line for each file it would otherwise have written.
+
+### 2. Restore a default file you've changed
+
+If you've edited a seed file and want the original template back:
+
+```bash
+rm ~/Sites/marchildmann.com.test/public_html/index.html
+./mac_setup_apache.sh
+```
+
+Only that one file is regenerated; everything else stays put.
+
+### 3. Add a new dev domain
+
+Open `mac_setup_apache.sh`, find the `DEV_DOMAINS=( … )` array near the top, add a line, save, and re-run:
+
+```bash
+DEV_DOMAINS=(
+  "marchildmann.com.test"
+  "iotdata.systems.test"
+  "columnlens.com.test"
+  "newproject.com.test"   # ← just add a line
+)
+./mac_setup_apache.sh
+```
+
+The script will:
+- create `~/Sites/newproject.com.test/public_html/` with a starter `index.html`,
+- add `127.0.0.1 newproject.com.test` inside the fenced `/etc/hosts` block,
+- regenerate the SSL cert with `newproject.com.test` added to its SANs (and re-trust it in the System keychain),
+- append HTTP + HTTPS vhost stanzas for the new domain to `httpd-vhosts.conf`,
+- flush the macOS resolver cache,
+- restart Apache and verify `https://newproject.com.test/` responds.
+
+Existing domains' content is untouched.
+
+### 4. Remove a dev domain
+
+Delete the line from `DEV_DOMAINS` and re-run. The script will:
+- drop the `/etc/hosts` entry,
+- regenerate the SSL cert without that SAN,
+- regenerate `httpd-vhosts.conf` without the orphaned vhost block.
+
+The on-disk `~/Sites/<old-domain>/` directory is **not** deleted — your content survives even after un-listing. Remove it manually with `rm -rf` if you want.
+
+### 5. Rebuild the GoExample binary
+
+The binary is preserved on re-run once it exists. To rebuild after editing `main.go`:
+
+```bash
+cd ~/Sites/GoExample && go build -o releases/goexample .
+supervisorctl restart goexample
+```
+
+Or, to let the script do it on the next run, delete the binary first:
+
+```bash
+rm ~/Sites/GoExample/releases/goexample
+./mac_setup_apache.sh
+```
+
+### 6. Change a port or proxy path
+
+Top-of-script variables can be overridden per-run via env vars without editing the script:
+
+```bash
+GO_PROXY_PORT=9100  GOEXAMPLE_PORT=9101  ./mac_setup_apache.sh
+```
+
+The vhosts and supervisor config are regenerated when needed; existing content under `~/Sites/` is preserved (so if you've manually edited `~/Sites/GoExample/public_html/.htaccess` to hard-code the old port, you'll need to `rm` it to pick up the new one).
 
 ---
 

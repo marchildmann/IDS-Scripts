@@ -131,6 +131,18 @@ else
 fi
 
 ### 7) Continue config (preserved if it already exists) ###
+# Notes on the context-window choices below:
+#   • Ollama defaults num_ctx to 4096 regardless of what the model supports,
+#     which makes Continue reject larger files ("File exceeds model's context
+#     length"). Passing contextLength tells Continue to forward num_ctx on
+#     every request so Ollama allocates a bigger KV cache.
+#   • Tuned for 16 GB unified RAM. Qwen 7B at 32K context lives in ~8 GB;
+#     Gemma 4 e4b at 16K lives in ~12 GB. Only one model is loaded at a
+#     time (Ollama unloads after ~5 min idle), so you never pay for both.
+#   • If you upgrade to 32 GB+ RAM, bump both contextLength values (try
+#     65536 or even 131072) and rm ~/.continue/config.json to re-render.
+#   • Tab autocomplete stays at 4096 — autocomplete prompts are tiny and
+#     a bigger KV cache just slows it down.
 mkdir -p "$CONTINUE_CONFIG_DIR"
 write_if_absent "$CONTINUE_CONFIG" <<'EOF'
 {
@@ -139,20 +151,29 @@ write_if_absent "$CONTINUE_CONFIG" <<'EOF'
       "title": "Qwen 2.5 Coder 7B (local) — code",
       "provider": "ollama",
       "model": "qwen2.5-coder:7b",
-      "apiBase": "http://localhost:11434"
+      "apiBase": "http://localhost:11434",
+      "contextLength": 32768,
+      "completionOptions": {
+        "maxTokens": 4096
+      }
     },
     {
       "title": "Gemma 4 e4b (local) — chat / docs / multimodal",
       "provider": "ollama",
       "model": "gemma4:e4b",
-      "apiBase": "http://localhost:11434"
+      "apiBase": "http://localhost:11434",
+      "contextLength": 16384,
+      "completionOptions": {
+        "maxTokens": 4096
+      }
     }
   ],
   "tabAutocompleteModel": {
     "title": "Qwen 2.5 Coder 7B (autocomplete)",
     "provider": "ollama",
     "model": "qwen2.5-coder:7b",
-    "apiBase": "http://localhost:11434"
+    "apiBase": "http://localhost:11434",
+    "contextLength": 4096
   },
   "embeddingsProvider": {
     "provider": "ollama",

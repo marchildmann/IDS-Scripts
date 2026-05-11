@@ -9,8 +9,10 @@ A growing collection of useful development scripts for macOS. Each script automa
 - [Overview](#overview)  
 - [Scripts](#scripts)  
   - [mac_setup_apache.sh](#mac_setup_apachesh)  
+  - [mac_setup_llm.sh](#mac_setup_llmsh)  
 - [Usage](#usage)  
-- [Daily workflow](#daily-workflow)  
+- [Daily workflow — mac_setup_apache.sh](#daily-workflow--mac_setup_apachesh)  
+- [Daily workflow — mac_setup_llm.sh](#daily-workflow--mac_setup_llmsh)  
 - [Contributing](#contributing)  
 - [License](#license)  
 
@@ -22,6 +24,7 @@ This repository collects standalone shell scripts that simplify and automate rou
 
 - **Web server** setups (Apache, Nginx, PHP, SSL)  
 - **Database** provisioning  
+- **Local LLM** coding environments (Ollama + VS Code)  
 - **Environment** configuration  
 - **Utility** tasks (backups, logs rotation, cleanup)  
 
@@ -98,6 +101,69 @@ Automates Apache + HTTPS + PHP 8.4 + DuckDB + Go reverse-proxy setup on macOS vi
 
 ---
 
+### mac_setup_llm.sh
+
+Sets up a local LLM coding environment for use inside VS Code. Intentionally kept **separate** from Claude Code, which stays on Anthropic's hosted models for hard agentic work — this script is for privacy-sensitive snippets, offline coding, and high-volume autocomplete that doesn't need a frontier-model brain.
+
+**Stack**  
+```
+VS Code  ──┐   Cmd+L chat / Cmd+I inline edit
+           │
+   Continue.continue extension
+           │
+           ▼   HTTP, http://localhost:11434
+       Ollama daemon  (brew services start ollama)
+         ├── qwen2.5-coder:7b    4.7 GB    code, autocomplete
+         ├── gemma4:e4b          9.6 GB    chat, docs, multimodal (text + image, 128K ctx)
+         └── nomic-embed-text    274 MB    @codebase embeddings
+```
+
+**Features**  
+- Installs/updates Homebrew packages: `ollama`  
+- Starts the Ollama daemon via `brew services` so it auto-runs on login (HTTP API on `http://localhost:11434`)  
+- Pulls each model in the `LLM_MODELS=( … )` array; skips ones already present (with `:latest` tag normalization so untagged entries don't false-miss)  
+- Installs the **Continue.continue** VS Code extension via `code --install-extension`  
+- Writes `~/.continue/config.json` with:  
+  - Both chat models in the dropdown above the input  
+  - **`contextLength`** tuned for 16 GB unified memory: **32 K** for Qwen 2.5 Coder 7B, **16 K** for Gemma 4 e4b — Ollama otherwise caps `num_ctx` at 4 K regardless of what the model supports, which trips "File exceeds model's context length" on anything bigger than ~10 KB  
+  - `maxTokens: 4096` so long outputs don't get clipped  
+  - `tabAutocompleteModel` pinned to Qwen at 4 K context (autocomplete prompts are tiny; a bigger KV cache just slows the per-keystroke roundtrip)  
+  - `embeddingsProvider` on `nomic-embed-text` so `@codebase` retrieval works  
+  - Anonymous telemetry disabled  
+- End-to-end verification: `curl /api/generate` against `$PRIMARY_MODEL` with a "reply ok" prompt (90 s timeout to allow the first cold-start)  
+- Strict shell mode (`set -euo pipefail`) and the same `write_if_absent` helper as the Apache script — re-runs **never** clobber `~/.continue/config.json`  
+- Override-able env vars at the top:  
+  - `OLLAMA_HOST` (default `http://localhost:11434`)  
+  - `PRIMARY_MODEL` (default `qwen2.5-coder:7b`) — the model used for the verification ping  
+
+**Why these models, on 16 GB hardware**  
+
+| Model | Use | Disk | Resident at configured context |
+|---|---|---:|---:|
+| `qwen2.5-coder:7b` | Continue's chat / autocomplete (best 7B coder) | 4.7 GB | ~8 GB at 32 K context |
+| `gemma4:e4b` | Chat / docs / multimodal (text + image), configurable thinking modes | 9.6 GB | ~12 GB at 16 K context |
+| `nomic-embed-text` | Embeddings for Continue's `@codebase` context provider | 274 MB | ~0.5 GB |
+
+Only one model is loaded at a time (Ollama unloads after ~5 min idle), so the 8 GB and 12 GB figures don't add. Switching between Qwen and Gemma in the Continue dropdown triggers a brief reload (~1–2 s) the first time you swap.
+
+**To add another model**, edit the `LLM_MODELS=( … )` array at the top of the script and re-run, or just:  
+```bash
+ollama pull qwen2.5-coder:32b      # if you have 32 GB+ unified RAM
+```
+
+**Where this fits next to Claude Code**  
+
+|  | Claude Code | Local stack |
+|---|---|---|
+| **Use for…** | hard agentic tasks, multi-file refactors, planning, "fix this failing test suite" | inline edits, autocomplete, "explain this", privacy-sensitive snippets, offline work |
+| **Model** | Anthropic Sonnet / Opus | Qwen 2.5 Coder 7B, Gemma 4 e4b |
+| **Network** | required | local-only |
+| **Cost** | per-token | electricity |
+
+The two run side by side: `Cmd+L` in VS Code gets you Continue with a local model; `claude` in a terminal gets you the hosted stack. They never step on each other.
+
+---
+
 ## Usage
 
 1. **Clone the repo**  
@@ -111,7 +177,9 @@ Automates Apache + HTTPS + PHP 8.4 + DuckDB + Go reverse-proxy setup on macOS vi
    chmod +x mac_setup_apache.sh
    ```
 
-3. **Run it**  
+3. **Run whichever script(s) you need**  
+
+   **Web server stack:**  
    ```bash
    ./mac_setup_apache.sh
    ```
@@ -142,11 +210,33 @@ Automates Apache + HTTPS + PHP 8.4 + DuckDB + Go reverse-proxy setup on macOS vi
      curl -k https://localhost/api/<your-route>
      ```  
 
+   **Local LLM stack:**  
+   ```bash
+   ./mac_setup_llm.sh
+   ```
+
+   - First run pulls ~15 GB of model weights and takes a few minutes; subsequent runs are seconds.  
+   - Before the first run, make sure VS Code's `code` command is on your `$PATH`: open VS Code → `Cmd+Shift+P` → **"Shell Command: Install 'code' command in PATH"**. Without it the script can't auto-install the Continue extension and will print a clear warning instead.  
+   - After install, open any project and start using it:  
+     ```bash
+     code .                           # open VS Code in this directory
+     # Cmd+L                          # opens the Continue chat panel
+     # Pick a model from the dropdown above the input box
+     # Cmd+I on selected code         # inline edit
+     # type @codebase what does this project do?
+     ```
+   - CLI smoke test without VS Code:  
+     ```bash
+     ollama run qwen2.5-coder:7b "Refactor this function: ..."
+     ollama run gemma4:e4b       "Explain this stack trace: ..."
+     ollama ps                        # see what's currently loaded in RAM
+     ```  
+
 ---
 
-## Daily workflow
+## Daily workflow — mac_setup_apache.sh
 
-The script is designed to be re-run as your environment evolves — every time you change a top-of-script variable, just run `./mac_setup_apache.sh` again. The four most common scenarios:
+The script is designed to be re-run as your environment evolves — every time you change a top-of-script variable, just run `./mac_setup_apache.sh` again. The six most common scenarios:
 
 ### 1. Edit your site content
 
@@ -221,6 +311,60 @@ GO_PROXY_PORT=9100  GOEXAMPLE_PORT=9101  ./mac_setup_apache.sh
 ```
 
 The vhosts and supervisor config are regenerated when needed; existing content under `~/Sites/` is preserved (so if you've manually edited `~/Sites/GoExample/public_html/.htaccess` to hard-code the old port, you'll need to `rm` it to pick up the new one).
+
+---
+
+## Daily workflow — mac_setup_llm.sh
+
+Like the Apache script, `mac_setup_llm.sh` is built to be re-run. The most common scenarios:
+
+### 1. Add another model
+
+Edit `LLM_MODELS=( … )` at the top of the script and re-run, or just pull directly:
+
+```bash
+ollama pull deepseek-coder-v2:16b      # ~9 GB, strong on refactors
+# or edit LLM_MODELS+=("deepseek-coder-v2:16b") and re-run
+```
+
+To make the new model show up in the Continue dropdown, add it to the `models` array in `~/.continue/config.json`. Continue auto-detects the file change within a second or two; if not, `Cmd+Shift+P → Continue: Reload Config` forces it.
+
+### 2. Switch which model handles autocomplete vs. chat
+
+Edit `~/.continue/config.json` — the `tabAutocompleteModel` block drives Tab-key completions, the `models` array drives the chat dropdown. Keep autocomplete pinned to a fast 7B model; chat can sit on anything that fits in RAM.
+
+### 3. Bump the context window
+
+Ollama defaults `num_ctx` to 4 K regardless of what the model supports. The script ships with `contextLength: 32768` for Qwen chat and `contextLength: 16384` for Gemma chat, tuned for 16 GB unified memory. On 32 GB+ hardware, bump both (try `65536` or `131072`) in `~/.continue/config.json` and watch RAM with `ollama ps` — each doubling of context roughly doubles KV-cache size.
+
+To start fresh from the script's defaults: `rm ~/.continue/config.json && ./mac_setup_llm.sh`.
+
+### 4. Restart the runtime
+
+```bash
+brew services restart ollama          # restart the daemon
+ollama ps                             # what's currently loaded
+brew services info ollama             # status / last start time
+```
+
+Continue auto-reconnects when Ollama comes back up — no need to restart VS Code.
+
+### 5. Force a fresh config
+
+Your `~/.continue/config.json` is preserved across script re-runs by the `write_if_absent` helper. To get the script's default back:
+
+```bash
+rm ~/.continue/config.json
+./mac_setup_llm.sh
+```
+
+### 6. Run against a remote Ollama (e.g. a beefier machine on your LAN)
+
+```bash
+OLLAMA_HOST=http://192.168.1.42:11434  ./mac_setup_llm.sh
+```
+
+The verification curl and `LLM_MODELS` pull will target that host. You'll still want to edit `~/.continue/config.json`'s `apiBase` fields to match, since those are baked at config-write time.
 
 ---
 

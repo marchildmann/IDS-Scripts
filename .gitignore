@@ -1,0 +1,14 @@
+# Claude Code session state (per-machine, never commit)
+.claude/
+
+# macOS Finder metadata
+.DS_Store
+
+# Editor swap / backup files
+*.swp
+*.swo
+*~
+
+# Local-only working files (uncommitted blog drafts, scratch notes, etc.)
+blog-*.md
+*.local.md
